@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -19,30 +20,66 @@ type PendingPrint struct {
 	PrinterMessageTs string
 }
 
-var PendingPrints map[string]PendingPrint
-var MyID string
+var (
+	PendingPrints map[string]PendingPrint
+	MyID          string
+	IPPClient     *ipp.CUPSClient
+)
 
 type Printer struct {
-	Queue       string
-	DisplayName string
-	Note        string
-	Reaction    string
+	Queue       string `json:"queue"`
+	DisplayName string `json:"display_name"`
+	Note        string `json:"note"`
+	Reaction    string `json:"reaction"`
 }
 
-var Printers = []Printer{
-	{Queue: "KONICA-MINOLTA-magicolor-1690MF", DisplayName: "Farebne", Note: "KONICA MINOLTA MAGICOLOR!", Reaction: "rainbow"},
-	{Queue: "Hermiona", DisplayName: "Čiernobielo", Note: "Hermiona", Reaction: "black_circle"},
+type SlackConfig struct {
+	AppToken string `json:"app_token"`
+	BotToken string `json:"bot_token"`
 }
+
+type CUPSConfig struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	TLS      bool   `json:"tls"`
+}
+
+type Configuration struct {
+	Printers []Printer   `json:"printers"`
+	Slack    SlackConfig `json:"slack"`
+	CUPS     CUPSConfig  `json:"cups"`
+}
+
+var Config Configuration
 
 func main() {
-	appToken := os.Getenv("PRINTBOT_APP_TOKEN")
-	botToken := os.Getenv("PRINTBOT_BOT_TOKEN")
+	var err error
+	configPath := os.Getenv("PRINTBOT_CONFIG_FILE")
+	if configPath == "" {
+		configPath = "config.json"
+	}
+
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		log.Error("Could not open config file.", "err", err, "file", configPath)
+		os.Exit(1)
+	}
+
+	err = json.Unmarshal(configData, &Config)
+	if err != nil {
+		log.Error("Could not read config file.", "err", err)
+		os.Exit(1)
+	}
+
+	IPPClient = ipp.NewCUPSClient(Config.CUPS.Host, Config.CUPS.Port, Config.CUPS.Username, Config.CUPS.Password, Config.CUPS.TLS)
 
 	PendingPrints = make(map[string]PendingPrint)
 
 	api := slack.New(
-		botToken,
-		slack.OptionAppLevelToken(appToken),
+		Config.Slack.BotToken,
+		slack.OptionAppLevelToken(Config.Slack.AppToken),
 		slack.OptionLog(log.WithPrefix("slack api").StandardLog()),
 	)
 
@@ -68,7 +105,7 @@ func main() {
 }
 
 func sendMessage(client *socketmode.Client, ch string, msg string) {
-	_, _, err := client.Client.PostMessage(ch, slack.MsgOptionText(msg, false))
+	_, _, err := client.PostMessage(ch, slack.MsgOptionText(msg, false))
 	if err != nil {
 		log.Error("Failed posting message", "err", err)
 	}
@@ -83,7 +120,7 @@ func addPendingPrint(channel string, file string, client *socketmode.Client) {
 
 func askPrinter(channel string, client *socketmode.Client) string {
 	printers := []string{}
-	for _, printer := range Printers {
+	for _, printer := range Config.Printers {
 		printers = append(printers, fmt.Sprintf("- :%s: *%s* _(%s)_", printer.Reaction, printer.DisplayName, printer.Note))
 	}
 
@@ -93,8 +130,8 @@ func askPrinter(channel string, client *socketmode.Client) string {
 		return ""
 	}
 
-	for _, r := range []string{"rainbow", "black_circle"} {
-		err = client.AddReaction(r, slack.NewRefToMessage(channel, timestamp))
+	for _, p := range Config.Printers {
+		err = client.AddReaction(p.Reaction, slack.NewRefToMessage(channel, timestamp))
 		if err != nil {
 			log.Error("Could not add reaction.", "err", err)
 		}
@@ -126,12 +163,12 @@ func handleMessage(evt *socketmode.Event, client *socketmode.Client) {
 		return
 	}
 
-	if len(ev.Files) != 1 {
+	if len(ev.Message.Files) != 1 {
 		sendMessage(client, ev.Channel, "Pošli mi prosím ťa jedno PDF, ktoré chceš vytlačiť.")
 		return
 	}
 
-	addPendingPrint(ev.Channel, ev.Files[0].URLPrivateDownload, client)
+	addPendingPrint(ev.Channel, ev.Message.Files[0].URLPrivateDownload, client)
 }
 
 func handleReaction(evt *socketmode.Event, client *socketmode.Client) {
@@ -164,13 +201,14 @@ func handleReaction(evt *socketmode.Event, client *socketmode.Client) {
 	}
 
 	var printer Printer
-	for _, p := range Printers {
+	for _, p := range Config.Printers {
 		if p.Reaction == ev.Reaction {
 			printer = p
 		}
 	}
 
 	if printer.Reaction == "" {
+		log.Warn("Unknown reaction", "reaction", ev.Reaction)
 		return
 	}
 
@@ -193,8 +231,7 @@ func handleReaction(evt *socketmode.Event, client *socketmode.Client) {
 		Name:     "printbot.pdf",
 		MimeType: "application/pdf",
 	}
-	ippClient := ipp.NewIPPClient(os.Getenv("PRINTBOT_CUPS_IP"), 631, "", "", false)
-	job, err := ippClient.PrintJob(doc, printer.Queue, map[string]interface{}{})
+	job, err := IPPClient.PrintJob(doc, printer.Queue, map[string]any{})
 	if err != nil {
 		log.Error("Could not send print job.", "printer", printer.Queue, "err", err)
 		sendMessage(client, channel, "Niečo sa pokazilo. :(")

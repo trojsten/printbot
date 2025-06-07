@@ -1,0 +1,36 @@
+{
+  "slack": {
+    "app_token": "",
+    "bot_token": ""
+  },
+  "cups": {
+    "host": "",
+    "port": 631
+  },
+  "printers": [
+    {
+      "queue": "kms_albus",
+      "display_name": "KMS / Albus",
+      "note": "Farebná tlač.",
+      "reaction": "large_blue_circle"
+    },
+    {
+      "queue": "fks_slonica",
+      "display_name": "FKS / Slonica",
+      "note": "Farebná tlač.",
+      "reaction": "large_orange_circle"
+    },
+    {
+      "queue": "t2_atrament",
+      "display_name": "T2 / Atrament",
+      "note": "Farebná tlač.",
+      "reaction": "large_green_circle"
+    },
+    {
+      "queue": "t2_hermiona",
+      "display_name": "T2 / Hermiona",
+      "note": "Iba čiernobiela tlač.",
+      "reaction": "black_circle"
+    }
+  ]
+}
